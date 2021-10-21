@@ -1,0 +1,221 @@
+diff --git a/sdkconfig.defaults b/sdkconfig.defaults
+index 6e17d2e..fc05332 100644
+--- a/sdkconfig.defaults
++++ b/sdkconfig.defaults
+@@ -163,7 +163,7 @@ CONFIG_APPTRACE_LOCK_ENABLE=y
+ #
+ # Bluetooth
+ #
+-# CONFIG_BT_ENABLED is not set
++CONFIG_BT_ENABLED=y
+ CONFIG_BTDM_CTRL_BR_EDR_SCO_DATA_PATH_EFF=0
+ CONFIG_BTDM_CTRL_PCM_ROLE_EFF=0
+ CONFIG_BTDM_CTRL_PCM_POLAR_EFF=0
+@@ -173,6 +173,12 @@ CONFIG_BTDM_CTRL_BR_EDR_MAX_SYNC_CONN_EFF=0
+ CONFIG_BTDM_CTRL_PINNED_TO_CORE=0
+ CONFIG_BTDM_BLE_SLEEP_CLOCK_ACCURACY_INDEX_EFF=1
+ CONFIG_BT_RESERVE_DRAM=0
++CONFIG_BTDM_CTRL_MODE_BLE_ONLY=n
++CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
++CONFIG_BTDM_CTRL_MODE_BTDM=n
++CONFIG_BT_CLASSIC_ENABLED=y
++CONFIG_BT_SPP_ENABLED=y
++CONFIG_BT_BLE_ENABLED=n
+ # end of Bluetooth
+ 
+ #
+@@ -721,8 +727,8 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+ # Certificate Bundle
+ #
+ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+-# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN is not set
++# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
++CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+ # CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_NONE is not set
+ # CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE is not set
+ # end of Certificate Bundle
+diff --git a/src/demos.h b/src/demos.h
+index a9128f3..83379fc 100644
+--- a/src/demos.h
++++ b/src/demos.h
+@@ -13,6 +13,7 @@ void web_client();
+ void mqtt();
+ void time_demo();
+ void boids_demo();
++void bt_demo();
+ 
+ // put your wifi ssid name and password in here
+ #define WIFI_SSID "MUGuests"
+diff --git a/src/main.c b/src/main.c
+index 93f9a12..6afc0d6 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -73,7 +73,7 @@ void wifi_menu() {
+     }
+     while(1) {
+         char *entries[]={"Scan","Connect","Access Point",
+-                         "Settings", "Back"};
++                         "Settings", "BT", "Back"};
+         sel=demo_menu("Wifi Menu",sizeof(entries)/sizeof(char *),entries,sel);
+         switch(sel) {
+             case 0:
+@@ -89,6 +89,9 @@ void wifi_menu() {
+                 wifi_settings_menu();
+                 break;
+             case 4:
++                bt_demo();
++                break;
++            case 5:
+                 return;
+         }
+     }
+diff --git a/src/networking.c b/src/networking.c
+index ed50bb3..422aa5c 100644
+--- a/src/networking.c
++++ b/src/networking.c
+@@ -25,6 +25,12 @@
+ #include "FreeSansBold24pt7b.h"
+ #include <driver/touch_pad.h>
+ #include "esp_wpa2.h"
++#include "esp_bt.h"
++#include "esp_bt_main.h"
++#include "esp_gap_bt_api.h"
++#include "esp_bt_device.h"
++#include "esp_spp_api.h"
++
+ 
+ #include "graphics3d.h"
+ #include "input_output.h"
+@@ -337,3 +343,131 @@ void time_demo() {
+     sntp_stop();
+ }
+ 
++static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
++{
++    char *s;
++    static const esp_spp_sec_t sec_mask = ESP_SPP_SEC_NONE;
++    static const esp_spp_role_t role_slave = ESP_SPP_ROLE_SLAVE;
++    snprintf(network_event,64,"BT:%d",event);
++    switch (event) {
++    case ESP_SPP_INIT_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_INIT_EVT");
++        esp_bt_dev_set_device_name("My BT Device");
++        esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
++        esp_spp_start_srv(sec_mask,role_slave, 0, "SPP_SERVER");
++        break;
++    case ESP_SPP_DISCOVERY_COMP_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_DISCOVERY_COMP_EVT");
++        break;
++    case ESP_SPP_OPEN_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_OPEN_EVT");
++        break;
++    case ESP_SPP_CLOSE_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_CLOSE_EVT");
++        break;
++    case ESP_SPP_START_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_START_EVT");
++        xEventGroupSetBits(network_event_group, CONNECTED_BIT);
++        break;
++    case ESP_SPP_CL_INIT_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_CL_INIT_EVT");
++        break;
++    case ESP_SPP_DATA_IND_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_DATA_IND_EVT len=%d handle=%d",
++                 param->data_ind.len, param->data_ind.handle);
++        esp_log_buffer_hex("",param->data_ind.data,param->data_ind.len);
++    
++        /*
++        s=(char *)(param->data_ind.data)+1;
++        lastcommand=(char)*(param->data_ind.data);
++        if(lastcommand=='C')
++            sscanf(s,"%d",&mode);
++        else
++            sscanf(s,"%d,%d\n",&xo,&yo);
++        if(mode==1) {
++            int bb=bout;
++            if(lastcommand=='M')
++                bb=(bout+7)%8;
++            bubbles[bb].x=xo;
++            bubbles[bb].y=yo;
++            bubbles[bb].sz=1;
++            bubbles[bb].col = pixelFromOffset(offset);
++            if(lastcommand=='D' && (bout+1)%8!=bin)
++                bout=(bout+1)%8;
++        }
++        */
++     //   ESP_LOGI(TAG, "OFFSETS %d %d",xo,yo);
++        break;
++    case ESP_SPP_CONG_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_CONG_EVT");
++        break;
++    case ESP_SPP_WRITE_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_WRITE_EVT");
++        break;
++    case ESP_SPP_SRV_OPEN_EVT:
++        ESP_LOGI(TAG, "ESP_SPP_SRV_OPEN_EVT");
++//        gettimeofday(&time_old, NULL);
++        break;
++    default:
++        break;
++    }
++}
++
++void bt_demo() {
++    network_event_group = xEventGroupCreate();
++    esp_err_t ret = nvs_flash_init();
++    if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
++        ESP_ERROR_CHECK(nvs_flash_erase());
++        ret = nvs_flash_init();
++    }
++    ESP_ERROR_CHECK( ret );
++
++
++    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
++    if ((ret = esp_bt_controller_init(&bt_cfg)) != ESP_OK) {
++        ESP_LOGE(TAG, "%s initialize controller failed: %s\n", __func__, esp_err_to_name(ret));
++        return;
++    }
++
++    if ((ret = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT)) != ESP_OK) {
++        ESP_LOGE(TAG, "%s enable controller failed: %s\n", __func__, esp_err_to_name(ret));
++        return;
++    }
++
++    if ((ret = esp_bluedroid_init()) != ESP_OK) {
++        ESP_LOGE(TAG, "%s initialize bluedroid failed: %s\n", __func__, esp_err_to_name(ret));
++        return;
++    }
++
++    if ((ret = esp_bluedroid_enable()) != ESP_OK) {
++        ESP_LOGE(TAG, "%s enable bluedroid failed: %s\n", __func__, esp_err_to_name(ret));
++        return;
++    }
++
++    if ((ret = esp_spp_register_callback(esp_spp_cb)) != ESP_OK) {
++        ESP_LOGE(TAG, "%s spp register failed: %s\n", __func__, esp_err_to_name(ret));
++        return;
++    }
++
++    if ((ret = esp_spp_init(ESP_SPP_MODE_CB)) != ESP_OK) {
++        ESP_LOGE(TAG, "%s spp init failed: %s\n", __func__, esp_err_to_name(ret));
++        return;
++    }
++    do {
++        cls(0);
++        setFont(FONT_DEJAVU18);
++        setFontColour(0,0,0);
++        draw_rectangle(3,0,display_width,18,rgbToColour(220,220,0));
++        print_xy("Bluetooth\n",5,3);
++        setFont(FONT_UBUNTU16);
++        setFontColour(255,255,255);
++        gprintf(network_event);
++        if(xEventGroupGetBits(network_event_group) & CONNECTED_BIT) {
++            gprintf("connected\n");
++        }
++        flip_frame();
++    } while(get_input()!=RIGHT_DOWN);
++//    xEventGroupWaitBits(network_event_group, CONNECTED_BIT,
++//                            false, true, portMAX_DELAY);
++
++}
